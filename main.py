@@ -1,84 +1,49 @@
 import cv2
-import face_recognition
-import mysql.connector
-from datetime import datetime
-import time
+import numpy as np
 
-# Open the default camera (0)
-cap = cv2.VideoCapture(0)
+net = cv2.dnn.readNet("yolov3.weights", "yolov3.cfg")
+layer_names = net.getUnconnectedOutLayersNames()
 
-# Connect to MySQL database
-db_connection = mysql.connector.connect(
-    host="localhost",
-    user="root",
-    password="Ayesiga@123",
-    database="store"
-)
+with open("coco.names", "r") as f:
+    classes = [line.strip() for line in f.readlines()]
 
-# Initialize flag to control camera feed and time of last face detection
-camera_on = True
-last_detection_time = 0
+def detect_cars(image_path):
+    frame = cv2.imread(image_path)
+    height, width = frame.shape[:2]
 
-while True:
-    if camera_on:
-        # Read the frame from the camera
-        ret, frame = cap.read()
+    blob = cv2.dnn.blobFromImage(frame, 0.00392, (416, 416), (0, 0, 0), True, crop=False)
+    net.setInput(blob)
+    outs = net.forward(layer_names)
 
-        # Convert the frame from BGR to RGB (face_recognition uses RGB)
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    class_ids = []
+    confidences = []
+    boxes = []
 
-        # Find all face locations in the frame
-        face_locations = face_recognition.face_locations(rgb_frame, model="hog")  # Adjust face detection model if necessary
+    for out in outs:
+        for detection in out:
+            scores = detection[5:]
+            class_id = np.argmax(scores)
+            confidence = scores[class_id]
+            if confidence > 0.5 and classes[class_id] == "car":
+                center_x, center_y, w, h = (detection[0:4] * np.array([width, height, width, height])).astype("int")
+                x, y = int(center_x - w / 2), int(center_y - h / 2)
+                boxes.append([x, y, w, h])
+                confidences.append(float(confidence))
+                class_ids.append(class_id)
 
-        current_time = time.time()
-        if face_locations and current_time - last_detection_time >= 5:
-            # If faces are detected and 5 seconds have elapsed since the last detection, save the face
-            last_detection_time = current_time
+    num_cars = len(boxes)
 
-            try:
-                # Connect to MySQL and save the face data
-                cursor = db_connection.cursor()
-                current_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                directory_saved = "saved-faces"  # Replace with the actual directory where you want to save images
-                encoded_faces = face_recognition.face_encodings(rgb_frame, face_locations)
-                for encoded_face in encoded_faces:
-                    encoded_face_hex = encoded_face.tobytes().hex()
-                    cursor.execute(
-                        "INSERT INTO storage (serial_number, file_path, confidence, timestamp_col) VALUES (%s, %s, %s, %s)",
-                        (None, directory_saved, 0.0, current_time_str))
-                db_connection.commit()
-                cursor.close()
+    for i in range(len(boxes)):
+        x, y, w, h = boxes[i]
+        label = f"Car {i+1}"
+        color = (0, 255, 0)  # Green bounding box
+        cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+        cv2.putText(frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
-                for i, (top, right, bottom, left) in enumerate(face_locations):
-                    face_image = frame[top:bottom, left:right]
-                    image_path = f"{directory_saved}/face_{i}.jpg"
-                    try:
-                        cv2.imwrite(image_path, face_image)
-                        print(f"Image saved: {image_path}")
-                    except Exception as e:
-                        print(f"Error saving image: {e}")
+    cv2.imshow("Detected Toy Cars", frame)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
 
-                # Draw rectangle and label on the detected faces
-                for top, right, bottom, left in face_locations:
-                    cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
-                    cv2.putText(frame, 'Detected Face', (left, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+    print(f"Number of cars detected: {num_cars}")
 
-            except mysql.connector.Error as err:
-                print("MySQL Error:", err)
-
-            # Turn off camera feed until next face detection
-            camera_on = False
-
-    if not camera_on:
-        # Wait for 5 seconds before turning the camera feed back on
-        if time.time() - last_detection_time >= 5:
-            camera_on = True
-
-    if camera_on:
-        cv2.imshow('Face Detection', frame)
-
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
-
-cap.release()
-cv2.destroyAllWindows()
+detect_cars("toys.jfif")
